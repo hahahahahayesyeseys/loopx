@@ -288,3 +288,73 @@ def test_native_cli_is_read_only_and_does_not_claim_native_receipts(tmp_path, ph
     rejected = subprocess.run(command, capture_output=True, text=True)
     assert rejected.returncode == 1
     assert json.loads(rejected.stdout)["ok"] is False
+
+
+def test_native_cli_projects_typed_capacity_exhaustion_without_raw_error(tmp_path):
+    registry = tmp_path / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "goals": [
+                    {
+                        "id": SCOPE["goal_id"],
+                        "repo": str(tmp_path),
+                        "status": "active",
+                        "registered_agents": [SCOPE["agent_id"]],
+                        "spawn_policy": POLICY,
+                    }
+                ],
+            }
+        )
+    )
+    before = registry.read_bytes()
+    command = [
+        sys.executable,
+        "-m",
+        "loopx.cli",
+        "--registry",
+        str(registry),
+        "agent-context",
+        "--goal-id",
+        SCOPE["goal_id"],
+        "--agent-id",
+        SCOPE["agent_id"],
+        "--phase",
+        "after_delegate_result",
+        "--native-child-operation",
+        "spawn",
+        "--native-child-outcome",
+        "agent_thread_limit_reached",
+        "--native-child-count",
+        "1",
+        "--format",
+        "json",
+    ]
+
+    result = subprocess.run(command, capture_output=True, text=True, check=True)
+    payload = json.loads(result.stdout)
+    [contribution] = payload["agent_context"]["contributions"]
+    observation = contribution["facts"]["native_host_capacity"]
+    assert payload["host_capacity_observed"] is True
+    assert payload["host_receipts_observed"] is False
+    assert observation["reason_code"] == "agent_thread_limit_reached"
+    assert observation["retry_same_turn"] is False
+    assert observation["recovery_actions"] == [
+        "continue_parent_work",
+        "defer_unlaunched_children",
+        "retry_after_capacity_change",
+    ]
+    assert registry.read_bytes() == before
+
+    invalid = subprocess.run(
+        [
+            *command[: command.index("after_delegate_result")],
+            "before_plan",
+            *command[command.index("after_delegate_result") + 1 :],
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert invalid.returncode == 1
+    assert "after_delegate_result" in json.loads(invalid.stdout)["error"]

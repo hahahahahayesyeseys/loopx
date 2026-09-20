@@ -16,6 +16,21 @@ def register_agent_context(subparsers, add_format):
         required=True,
         choices=("before_plan", "before_delegate", "after_delegate_result"),
     )
+    parser.add_argument(
+        "--native-child-operation",
+        choices=("spawn", "followup"),
+        help="Typed native child operation observed by the current host.",
+    )
+    parser.add_argument(
+        "--native-child-outcome",
+        choices=("succeeded", "agent_thread_limit_reached"),
+        help="Typed native child outcome; raw host errors are never accepted.",
+    )
+    parser.add_argument(
+        "--native-child-count",
+        type=int,
+        help="Optional non-negative native child count observed by the host.",
+    )
 
 
 def handle_agent_context(args, registry_path, runtime_root, print_payload, output_format):
@@ -27,12 +42,62 @@ def handle_agent_context(args, registry_path, runtime_root, print_payload, outpu
             render_agent_context,
         )
         return 1
+    operation = args.native_child_operation
+    outcome = args.native_child_outcome
+    child_count = args.native_child_count
+    if bool(operation) != bool(outcome):
+        print_payload(
+            {
+                "ok": False,
+                "error": (
+                    "--native-child-operation and --native-child-outcome "
+                    "must be provided together"
+                ),
+            },
+            output_format(args),
+            render_agent_context,
+        )
+        return 1
+    if operation and args.phase != "after_delegate_result":
+        print_payload(
+            {
+                "ok": False,
+                "error": "native child outcomes require --phase after_delegate_result",
+            },
+            output_format(args),
+            render_agent_context,
+        )
+        return 1
+    if child_count is not None and (child_count < 0 or not operation):
+        print_payload(
+            {
+                "ok": False,
+                "error": (
+                    "--native-child-count must be non-negative and accompany "
+                    "a native child operation/outcome"
+                ),
+            },
+            output_format(args),
+            render_agent_context,
+        )
+        return 1
+    observations = {}
+    if operation:
+        native_capacity = {
+            "schema_version": "native_subagent_capacity_observation_v0",
+            "operation": operation,
+            "outcome": outcome,
+        }
+        if child_count is not None:
+            native_capacity["child_count"] = child_count
+        observations["native_host_capacity"] = native_capacity
     context = project_goal_agent_context(
         phase=args.phase,
         scope={"goal_id": args.goal_id, "agent_id": args.agent_id, "todo_id": None},
         goal=goal,
         registry_path=registry_path,
         runtime_root=runtime_root,
+        observations=observations,
     )
     print_payload(
         {
@@ -42,6 +107,8 @@ def handle_agent_context(args, registry_path, runtime_root, print_payload, outpu
             "read_only": True,
             "host_receipts_observed": False,
             "host_receipts_scope": "native_tool_input",
+            "host_capacity_observed": bool(operation),
+            "host_capacity_scope": "native_tool_input",
         },
         output_format(args),
         render_agent_context,

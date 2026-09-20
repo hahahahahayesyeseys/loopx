@@ -4,12 +4,12 @@ import type { JsonObject } from "./effect_program.ts";
 import { jsonObject, requireJsonObject } from "./runtime_decode.ts";
 
 export const subagentContextProvider: AgentContextProvider = {
-  hookId: "multi_subagent.coordinator", capabilityId: "multi_subagent", revision: "v3",
+  hookId: "multi_subagent.coordinator", capabilityId: "multi_subagent", revision: "v4",
   phases: AGENT_CONTEXT_PHASES,
   produce(input, config) {
     const guidance = {
       before_plan: [
-        "Prefer parallel delegation for bounded independent work when useful; avoid duplicate reads. Keep one decision-relevant coordinator question.",
+        "Prefer bounded independent delegation; max_children is a configured ceiling, not live availability. Admit native children incrementally, avoid duplicate reads, and keep one parent question.",
         "Native child tools can read loopx agent-context at before_delegate and after_delegate_result; these calls do not start Turns or spend quota.",
         "Authorized routes are observations, not obligations. Use a ready route only when it fits; blocked/unknown routes never block native work. No heartbeat must use every route.",
       ],
@@ -19,11 +19,17 @@ export const subagentContextProvider: AgentContextProvider = {
       ],
       after_delegate_result: [
         "Check returned sources, omissions and contradictions against the question. Reconcile native child receipts and any freshly read bound delegation operation receipts; missing, unavailable or rejected receipts do not establish completed work.",
+        "On typed agent_thread_limit_reached, stop same-Turn spawn/followup retries, mark unlaunched work incomplete, and continue useful parent work.",
         "Verify decisive sources and record accept/defer/reject with reasons. Link accepted evidence to the deliverable and run parent validation before writeback; opinions are not independent evidence.",
       ],
     }[input.phase];
     const facts: JsonObject = {
       max_children: config.max_children,
+      capacity_contract: {
+        schema_version: "multi_subagent_capacity_v0",
+        configured_limit_kind: "upper_bound",
+        live_availability: "not_observed",
+      },
       model_preference: jsonObject(config.model_config),
     };
     const count = input.observations.child_count;
@@ -33,6 +39,15 @@ export const subagentContextProvider: AgentContextProvider = {
       facts.delegation_context = delegation;
     }
     if (input.phase === "after_delegate_result") {
+      const nativeCapacity = boundedNativeCapacityObservation(
+        input.observations.native_host_capacity,
+      );
+      if (nativeCapacity) {
+        facts.native_host_capacity = nativeCapacity;
+        const contract = facts.capacity_contract as JsonObject;
+        contract.live_availability = nativeCapacity.outcome === "agent_thread_limit_reached"
+          ? "capacity_exhausted" : "attempt_observed";
+      }
       const counts = jsonObject(input.observations.reconciliation_counts);
       facts.receipt_observation = counts ? "host_reconciled" : "not_supplied";
       if (counts) facts.reconciliation_counts = Object.fromEntries(
@@ -50,6 +65,38 @@ export const subagentContextProvider: AgentContextProvider = {
     ] };
   },
 };
+
+function boundedNativeCapacityObservation(value: unknown): JsonObject | null {
+  const source = jsonObject(value);
+  if (!source || source.schema_version !== "native_subagent_capacity_observation_v0") {
+    return null;
+  }
+  const operation = String(source.operation ?? "");
+  const outcome = String(source.outcome ?? "");
+  if (!["spawn", "followup"].includes(operation)
+    || !["succeeded", "agent_thread_limit_reached"].includes(outcome)) {
+    return null;
+  }
+  const result: JsonObject = {
+    schema_version: "native_subagent_capacity_observation_v0",
+    operation,
+    outcome,
+    retry_same_turn: outcome !== "agent_thread_limit_reached",
+  };
+  const childCount = source.child_count;
+  if (Number.isInteger(childCount) && Number(childCount) >= 0) {
+    result.child_count = Math.min(Number(childCount), 10_000);
+  }
+  if (outcome === "agent_thread_limit_reached") {
+    result.reason_code = "agent_thread_limit_reached";
+    result.recovery_actions = [
+      "continue_parent_work",
+      "defer_unlaunched_children",
+      "retry_after_capacity_change",
+    ];
+  }
+  return result;
+}
 
 function boundedDelegationContext(value: unknown): JsonObject | null {
   const source = jsonObject(value);

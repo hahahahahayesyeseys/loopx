@@ -522,6 +522,32 @@ loopx agent-context --goal-id example-peer-task-goal --agent-id coordinator \
   --phase after_delegate_result --format json
 ```
 
+`max_children` is the configured Goal ceiling, not a live count of available
+native host slots. When a native `spawn` or `followup` call reports the bounded
+`agent_thread_limit_reached` outcome, return that typed observation without raw
+host text:
+
+```bash
+loopx agent-context --goal-id example-peer-task-goal --agent-id coordinator \
+  --phase after_delegate_result --native-child-operation spawn \
+  --native-child-outcome agent_thread_limit_reached --native-child-count 1 \
+  --format json
+```
+
+The resulting `native_host_capacity` fact is read-only and scoped to the current
+host observation. It tells the coordinator to stop same-Turn spawn/followup
+retries, mark unlaunched work incomplete and continue useful parent work until
+capacity changes. It does not delete, import, resume or rebind sessions, lower
+the configured ceiling, or claim that a completed child freed a slot. Raw host
+errors and session identities are never accepted by this interface.
+
+中文：`max_children` 只是 Goal 配置上限，不代表宿主此刻有同样数量的可用槽位。
+当原生 `spawn` 或 `followup` 返回 `agent_thread_limit_reached` 时，使用上述
+`after_delegate_result` 调用提交有界类型化观察；返回的
+`native_host_capacity` 会要求本 Turn 停止重复派发、把未启动工作标记为未完成，
+并继续主 Agent 的有用工作，待容量变化后再试。该只读接口不会删除、导入、恢复或
+重新绑定任何 Session，也不会把“子任务已完成”臆断成“容量已经释放”。
+
 The coordinator must be registered. The command reads current registry policy
 without writing a Todo, starting a turn or spending quota. When an execution
 configuration is present, `before_plan` reads only the binding directory;

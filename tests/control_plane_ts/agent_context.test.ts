@@ -188,9 +188,48 @@ test("coordinator participation guidance survives all bounded lifecycle projecti
     } })!;
     assert.deepEqual(packet.failures, []);
     const [contribution] = packet.contributions as Record<string, any>[];
-    assert.equal(contribution.revision, "v3");
+    assert.equal(contribution.revision, "v4");
     assert.equal(packet.authority, "guidance_only");
     assert.ok(Buffer.byteLength(JSON.stringify(contribution)) <= 2048);
     assert.ok(Buffer.byteLength(JSON.stringify(packet)) <= 3072);
   }
+});
+
+test("configured child limit stays distinct from typed native host capacity", () => {
+  const before = evaluateSubagentContext({ phase: "before_plan", scope,
+    orchestration: { ...policy, max_children: 6 } })!;
+  const beforeFacts = (before.contributions as Record<string, any>[])[0].facts;
+  assert.equal(beforeFacts.max_children, 6);
+  assert.deepEqual(beforeFacts.capacity_contract, {
+    schema_version: "multi_subagent_capacity_v0",
+    configured_limit_kind: "upper_bound",
+    live_availability: "not_observed",
+  });
+
+  const after = evaluateSubagentContext({ phase: "after_delegate_result", scope,
+    orchestration: { ...policy, max_children: 6 }, observations: {
+      native_host_capacity: {
+        schema_version: "native_subagent_capacity_observation_v0",
+        operation: "followup",
+        outcome: "agent_thread_limit_reached",
+        child_count: 1,
+        raw_error: "private host detail",
+      },
+    } })!;
+  const afterFacts = (after.contributions as Record<string, any>[])[0].facts;
+  assert.equal(afterFacts.capacity_contract.live_availability, "capacity_exhausted");
+  assert.deepEqual(afterFacts.native_host_capacity, {
+    schema_version: "native_subagent_capacity_observation_v0",
+    operation: "followup",
+    outcome: "agent_thread_limit_reached",
+    retry_same_turn: false,
+    child_count: 1,
+    reason_code: "agent_thread_limit_reached",
+    recovery_actions: [
+      "continue_parent_work",
+      "defer_unlaunched_children",
+      "retry_after_capacity_change",
+    ],
+  });
+  assert.ok(!JSON.stringify(after).includes("private host detail"));
 });
