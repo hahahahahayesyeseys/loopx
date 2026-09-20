@@ -158,7 +158,13 @@ def test_installed_skill_defers_delegation_policy_to_enabled_provider(tmp_path):
     enabled = project_agent_context(
         phase="before_plan", scope=SCOPE, orchestration=POLICY
     )
+    contribution = enabled["contributions"][0]
     assert any(
-        "parallel delegation" in item
-        for item in enabled["contributions"][0]["guidance"]
+        "max_children is a configured ceiling" in item
+        for item in contribution["guidance"]
     )
+    assert contribution["facts"]["capacity_contract"] == {
+        "schema_version": "multi_subagent_capacity_v0",
+        "configured_limit_kind": "upper_bound",
+        "live_availability": "not_observed",
+    }
