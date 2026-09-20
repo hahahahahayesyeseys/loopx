@@ -40,6 +40,8 @@ def _raise(payload: dict[str, object]) -> QuotaActionSelectionConflictError:
             requested_todo_id=REQUESTED_TODO_ID,
             receipt_bound_todo_id=None,
             receipt_bound_replan_obligation_id=None,
+            receipt_pending_action_todo_id=None,
+            receipt_identity_upgraded=False,
         )
     return raised.value
 
@@ -80,6 +82,8 @@ def test_a_qualified_selection_for_the_requested_todo_is_not_a_conflict() -> Non
         requested_todo_id=REQUESTED_TODO_ID,
         receipt_bound_todo_id=None,
         receipt_bound_replan_obligation_id=None,
+        receipt_pending_action_todo_id=None,
+        receipt_identity_upgraded=False,
     )
 
     assert is_conflict is False
