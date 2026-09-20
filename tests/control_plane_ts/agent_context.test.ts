@@ -232,4 +232,16 @@ test("configured child limit stays distinct from typed native host capacity", ()
     ],
   });
   assert.ok(!JSON.stringify(after).includes("private host detail"));
+
+  const succeeded = evaluateSubagentContext({ phase: "after_delegate_result", scope,
+    orchestration: { ...policy, max_children: 6 }, observations: {
+      native_host_capacity: {
+        schema_version: "native_subagent_capacity_observation_v0",
+        operation: "spawn",
+        outcome: "succeeded",
+      },
+    } })!;
+  const succeededFacts = (succeeded.contributions as Record<string, any>[])[0].facts;
+  assert.equal(succeededFacts.capacity_contract.live_availability, "attempt_observed");
+  assert.equal(succeededFacts.native_host_capacity.retry_same_turn, undefined);
 });

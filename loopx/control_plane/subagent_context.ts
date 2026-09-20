@@ -81,13 +81,13 @@ function boundedNativeCapacityObservation(value: unknown): JsonObject | null {
     schema_version: "native_subagent_capacity_observation_v0",
     operation,
     outcome,
-    retry_same_turn: outcome !== "agent_thread_limit_reached",
   };
   const childCount = source.child_count;
   if (Number.isInteger(childCount) && Number(childCount) >= 0) {
     result.child_count = Math.min(Number(childCount), 10_000);
   }
   if (outcome === "agent_thread_limit_reached") {
+    result.retry_same_turn = false;
     result.reason_code = "agent_thread_limit_reached";
     result.recovery_actions = [
       "continue_parent_work",
