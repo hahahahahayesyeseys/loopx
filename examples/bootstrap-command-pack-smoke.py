@@ -420,6 +420,85 @@ def test_start_goal_guided_previews_transaction_without_mutation() -> None:
         assert_fixture_unchanged(snapshot)
 
 
+def test_start_goal_guided_blocks_orphaned_goal_state() -> None:
+    """A reset that deleted the registry entry must not reopen the same goal."""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp) / "reset-project"
+        project.mkdir()
+        goal_id = "reset-goal"
+        snapshot = write_connected_goal_fixture(
+            project, goal_id=goal_id, agent_id="codex-retired"
+        )
+        state_file = project / ".codex" / "goals" / goal_id / "ACTIVE_GOAL_STATE.md"
+        registry = project / ".loopx" / "registry.json"
+        registry.write_text(
+            json.dumps({"schema_version": "0.1", "goals": []}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        payload = run_json(
+            "start-goal",
+            "--guided",
+            "--project",
+            str(project),
+            "--goal-id",
+            goal_id,
+            "--host-surface",
+            "codex-app",
+            "--goal-text",
+            "Continue the interrupted refactor",
+        )
+
+        connection = payload["project_connection"]
+        assert connection["connection_state"] == "orphaned_goal_state", connection
+        assert connection["goal_found"] is False, connection
+        assert connection["bootstrap_continuation_allowed"] is False, connection
+        assert connection["orphaned_goal_state"]["state_file_routes"] == [
+            f".codex/goals/{goal_id}/ACTIVE_GOAL_STATE.md"
+        ], connection
+
+        transaction = payload["guided_transaction"]
+        assert transaction["blocked_by"] == "orphaned_goal_state", transaction
+        assert [step["id"] for step in transaction["ordered_steps"]] == [
+            "inspect_connection",
+            "resolve_orphaned_goal_state",
+        ], transaction
+
+        gate = transaction["orphaned_goal_state_gate"]
+        assert gate["schema_version"] == "loopx_orphaned_goal_state_gate_v0", gate
+        assert gate["forbidden_until_resolved"] == [
+            "bootstrap",
+            "agent_registration",
+            "todo_write",
+            "quota_spend",
+            "host_loop_activation",
+        ], gate
+        for route in gate["resolution_routes"]:
+            assert route["mutates"] is False, route
+            assert "--execute" not in route["command"], route
+            assert route["command"].splitlines()[-1].startswith("loopx "), route
+
+        commands = payload["command_pack"]["commands"]
+        for key in (
+            "goal_start_connect_if_needed",
+            "bootstrap_after_user_confirmation",
+            "goal_start_plan_prompt",
+        ):
+            assert commands[key] is None, key
+
+        safety = payload["safety_contract"]
+        assert safety["force_bootstrap_allowed"] is False, safety
+        assert safety["writes_state_file"] is False, safety
+        assert safety["orphaned_goal_state_blocks_continuation"] is True, safety
+        assert_packet_summary_refs(
+            payload,
+            packet_kind="guided_start_goal",
+            compact_projection_default=True,
+        )
+        assert_fixture_unchanged({registry: registry.read_text(), state_file: snapshot[state_file]})
+
+
 def test_start_goal_guided_requires_explicit_goal_for_multi_goal_project() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         project = Path(tmp) / "multi-goal-project"
@@ -816,6 +895,7 @@ def main() -> int:
     test_missing_project_stops_before_mutation()
     test_goal_text_invocation_plans_ranked_todos_before_activation()
     test_start_goal_guided_previews_transaction_without_mutation()
+    test_start_goal_guided_blocks_orphaned_goal_state()
     test_start_goal_guided_requires_explicit_goal_for_multi_goal_project()
     test_connected_project_reuses_existing_state()
     test_linked_git_worktree_reuses_canonical_source_registry()
