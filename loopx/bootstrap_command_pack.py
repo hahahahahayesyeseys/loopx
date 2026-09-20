@@ -14,6 +14,12 @@ from .capabilities.issue_fix.workflow_plan import (
     build_issue_fix_goal_command_templates,
 )
 from .control_plane.effect_program import effect_program_from_ordered_steps
+from .control_plane.goals.orphaned_goal_state import (
+    fence_command_pack,
+    guided_fence,
+    registry_missing_goal_connection,
+    render_guided_lines,
+)
 from .control_plane.goals.start_contract import (
     build_goal_start_contract,
     build_goal_start_prompt,
@@ -608,18 +614,13 @@ def inspect_bootstrap_connection(
     state_file = goal_state_file or fallback_state_file
 
     if selected_goal is None:
-        return {
-            **base_connection,
-            "registry_exists": True,
-            "goal_id": resolved_goal_id,
-            "goal_found": False,
-            "known_goal_ids": [str(goal.get("id")) for goal in goals],
-            "state_file": str(state_file),
-            "state_file_exists": state_file.exists(),
-            "connection_state": "registry_without_goal",
-            "mutation_confirmation_required": True,
-            "reason": "registry exists but no matching goal entry was found",
-        }
+        return registry_missing_goal_connection(
+            base_connection=base_connection,
+            project=resolved_project,
+            goal_id=resolved_goal_id,
+            known_goal_ids=[str(goal.get("id")) for goal in goals],
+            state_file=state_file,
+        )
 
     if not selected_goal.get("state_file"):
         return {
@@ -1076,6 +1077,7 @@ def build_loopx_bootstrap_command_pack(
             "host_loop_activation_allowed": activation_allowed,
         },
     }
+    fence_command_pack(payload, command_prefix=command_prefix)
     if normalized_thread_id:
         payload["thread_id"] = normalized_thread_id
         payload["thread_agent_binding"] = thread_binding_projection
@@ -1709,6 +1711,10 @@ def build_start_goal_guided_packet(
             detail_command=detail_command,
         )
     )
+    orphaned_gate = command_pack.get("orphaned_goal_state")
+    if isinstance(orphaned_gate, dict):
+        guided_transaction.update(guided_fence(orphaned_gate))
+        guided_transaction.pop("identity_selection_gate", None)
     payload = {
         "ok": True,
         "schema_version": GUIDED_START_SCHEMA_VERSION,
@@ -1731,6 +1737,7 @@ def build_start_goal_guided_packet(
             "spends_quota": False,
             "mutation_commands_are_previewed": True,
             "force_bootstrap_allowed": False,
+            "orphaned_goal_state_blocks_continuation": isinstance(orphaned_gate, dict),
         },
     }
     if command_pack.get("thread_id"):
@@ -1887,6 +1894,7 @@ def render_start_goal_guided_markdown(payload: dict[str, Any]) -> str:
             + "\n".join(choices)
             + "\n"
         )
+    orphan_gate_lines = render_guided_lines(transaction)
     host_gate = transaction.get("host_surface_selection_gate")
     host_gate = host_gate if isinstance(host_gate, dict) else {}
     host_gate_lines = ""
@@ -1916,6 +1924,7 @@ Preview only; follow ordered commands to mutate.
 {chr(10).join(step_lines)}
 {host_gate_lines}
 {goal_gate_lines}
+{orphan_gate_lines}
 {identity_gate_lines}
 
 ## Todo Preservation
