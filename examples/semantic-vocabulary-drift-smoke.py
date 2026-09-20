@@ -27,10 +27,10 @@ from loopx.semantics.inventory import (  # noqa: E402
     INVENTORY_SCHEMA_VERSION,
     SourceFile,
     build_inventory,
-    render_inventory,
     collect_string_constants,
     load_sources,
     python_facts,
+    render_inventory as render_inventory,
     string_constant_definitions,
     typescript_facts,
 )
@@ -232,8 +232,8 @@ RETURN_PATH_ANCHOR = {
 TWIN_ROOT_ANCHOR = "loopx/control_plane"
 TWIN_BUDGET_ANCHOR = 43
 BUDGET_ANCHOR = {
-    "same_runtime_forks": 18,
-    "same_runtime_fork_definitions": 41,
+    "same_runtime_forks": 17,
+    "same_runtime_fork_definitions": 39,
     "conflicting_values": 16,
     "conflicting_definitions": 55,
     "schema_version_same_runtime_forks": 7,
@@ -241,7 +241,7 @@ BUDGET_ANCHOR = {
     "multi_value_forks": 2,
     "multi_value_forks_semantic": 1,
     "multi_value_fork_definitions": 6,
-    "same_runtime_forks_semantic": 11,
+    "same_runtime_forks_semantic": 10,
     "conflicting_values_semantic": 0,
 }
 # Budgets for the legacy should-run decision fields, anchored the same way so a
