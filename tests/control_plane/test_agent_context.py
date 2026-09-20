@@ -283,6 +283,8 @@ def test_native_cli_is_read_only_and_does_not_claim_native_receipts(tmp_path, ph
     assert payload["agent_context"]["phase"] == phase
     assert payload["host_receipts_observed"] is False
     assert payload["host_receipts_scope"] == "native_tool_input"
+    assert "host_capacity_observed" not in payload
+    assert "host_capacity_scope" not in payload
     assert registry.read_bytes() == before
     command[command.index(SCOPE["agent_id"])] = "unregistered"
     rejected = subprocess.run(command, capture_output=True, text=True)
@@ -358,3 +360,12 @@ def test_native_cli_projects_typed_capacity_exhaustion_without_raw_error(tmp_pat
     )
     assert invalid.returncode == 1
     assert "after_delegate_result" in json.loads(invalid.stdout)["error"]
+
+    disabled_payload = json.loads(registry.read_text())
+    disabled_payload["goals"][0]["spawn_policy"]["spawn_allowed"] = False
+    registry.write_text(json.dumps(disabled_payload))
+    disabled_before = registry.read_bytes()
+    disabled = subprocess.run(command, capture_output=True, text=True)
+    assert disabled.returncode == 1
+    assert "enabled multi_subagent" in json.loads(disabled.stdout)["error"]
+    assert registry.read_bytes() == disabled_before

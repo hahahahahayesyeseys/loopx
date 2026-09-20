@@ -99,20 +99,32 @@ def handle_agent_context(args, registry_path, runtime_root, print_payload, outpu
         runtime_root=runtime_root,
         observations=observations,
     )
-    print_payload(
-        {
-            "ok": True,
-            "agent_context": context,
-            "source": "registry.spawn_policy+local_delegation",
-            "read_only": True,
-            "host_receipts_observed": False,
-            "host_receipts_scope": "native_tool_input",
-            "host_capacity_observed": bool(operation),
-            "host_capacity_scope": "native_tool_input",
-        },
-        output_format(args),
-        render_agent_context,
-    )
+    if operation and context is None:
+        print_payload(
+            {
+                "ok": False,
+                "error": "native child outcomes require enabled multi_subagent policy",
+            },
+            output_format(args),
+            render_agent_context,
+        )
+        return 1
+    payload = {
+        "ok": True,
+        "agent_context": context,
+        "source": "registry.spawn_policy+local_delegation",
+        "read_only": True,
+        "host_receipts_observed": False,
+        "host_receipts_scope": "native_tool_input",
+    }
+    if operation:
+        payload.update(
+            {
+                "host_capacity_observed": True,
+                "host_capacity_scope": "native_tool_input",
+            }
+        )
+    print_payload(payload, output_format(args), render_agent_context)
     return 0
 
 
