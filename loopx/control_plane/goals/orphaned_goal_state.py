@@ -27,6 +27,12 @@ ORPHANED_GOAL_STATE_GATE_SCHEMA_VERSION = "loopx_orphaned_goal_state_gate_v0"
 
 REGISTRY_WITHOUT_GOAL_CONNECTION = "registry_without_goal"
 
+NOT_CONNECTED_CONNECTION = "not_connected"
+
+REGISTRY_WITHOUT_GOAL_REASON = "registry exists but no matching goal entry was found"
+
+NOT_CONNECTED_REASON = "project-local .loopx/registry.json is missing"
+
 # Project-local goal state has been written under each of these roots, so a goal
 # absent from the registry can still own durable state in any of them. Ordered
 # current route first; every match is reported, never merged or copied.
@@ -95,32 +101,40 @@ def orphaned_goal_state_projection(project: Path, goal_id: str) -> dict[str, Any
     }
 
 
-def registry_missing_goal_connection(
+def goal_connection_without_matching_entry(
     *,
     base_connection: dict[str, Any],
     project: Path,
     goal_id: str,
-    known_goal_ids: list[str],
     state_file: Path,
+    registry_exists: bool,
+    absence_connection: str,
+    absence_reason: str,
+    known_goal_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Classify "no registry entry" as orphaned state or as ordinary absence."""
+    """Classify "no matching registry entry" as orphaned state or as ordinary absence.
+
+    The absence half keeps the packet fields it carried before this fence existed,
+    including which of them are present, so a fresh project is unaffected.
+    """
 
     shared = {
         **base_connection,
-        "registry_exists": True,
+        "registry_exists": registry_exists,
         "goal_id": goal_id,
         "goal_found": False,
-        "known_goal_ids": known_goal_ids,
         "state_file": str(state_file),
         "state_file_exists": state_file.exists(),
         "mutation_confirmation_required": True,
     }
+    if known_goal_ids is not None:
+        shared["known_goal_ids"] = known_goal_ids
     projection = orphaned_goal_state_projection(project, goal_id)
     if projection is None:
         return {
             **shared,
-            "connection_state": REGISTRY_WITHOUT_GOAL_CONNECTION,
-            "reason": "registry exists but no matching goal entry was found",
+            "connection_state": absence_connection,
+            "reason": absence_reason,
         }
     return {
         **shared,
@@ -129,6 +143,27 @@ def registry_missing_goal_connection(
         "bootstrap_continuation_allowed": False,
         "reason": ORPHANED_GOAL_STATE_REASON,
     }
+
+
+def registry_missing_goal_connection(**fields: Any) -> dict[str, Any]:
+    """Classify the absence inside a readable, non-empty registry."""
+
+    return goal_connection_without_matching_entry(
+        absence_connection=REGISTRY_WITHOUT_GOAL_CONNECTION,
+        absence_reason=REGISTRY_WITHOUT_GOAL_REASON,
+        **fields,
+    )
+
+
+def unregistered_goal_connection(**fields: Any) -> dict[str, Any]:
+    """Classify the absence when no readable registry declares any goal."""
+
+    return goal_connection_without_matching_entry(
+        registry_exists=False,
+        absence_connection=NOT_CONNECTED_CONNECTION,
+        absence_reason=NOT_CONNECTED_REASON,
+        **fields,
+    )
 
 
 def orphaned_goal_state_gate(

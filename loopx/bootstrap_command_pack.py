@@ -19,6 +19,7 @@ from .control_plane.goals.orphaned_goal_state import (
     guided_fence,
     registry_missing_goal_connection,
     render_guided_lines,
+    unregistered_goal_connection,
 )
 from .control_plane.goals.start_contract import (
     build_goal_start_contract,
@@ -590,17 +591,12 @@ def inspect_bootstrap_connection(
         }
 
     if not registry:
-        return {
-            **base_connection,
-            "registry_exists": False,
-            "goal_id": inferred_goal_id,
-            "goal_found": False,
-            "state_file": str(state_file),
-            "state_file_exists": state_file.exists(),
-            "connection_state": "not_connected",
-            "mutation_confirmation_required": True,
-            "reason": "project-local .loopx/registry.json is missing",
-        }
+        return unregistered_goal_connection(
+            base_connection=base_connection,
+            project=resolved_project,
+            goal_id=inferred_goal_id,
+            state_file=state_file,
+        )
 
     goals = registry_goals(registry)
     selected_goal_id, selected_goal = _select_goal(goals, goal_id)
@@ -620,6 +616,7 @@ def inspect_bootstrap_connection(
             goal_id=resolved_goal_id,
             known_goal_ids=[str(goal.get("id")) for goal in goals],
             state_file=state_file,
+            registry_exists=True,
         )
 
     if not selected_goal.get("state_file"):
