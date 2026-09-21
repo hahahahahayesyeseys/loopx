@@ -499,6 +499,49 @@ def test_start_goal_guided_blocks_orphaned_goal_state() -> None:
         assert_fixture_unchanged({registry: registry.read_text(), state_file: snapshot[state_file]})
 
 
+def test_start_goal_guided_blocks_orphaned_state_without_a_registry() -> None:
+    """The same invariant must hold when the reset deleted the whole registry file."""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp) / "reset-project"
+        state_file = project / ".codex" / "goals" / "reset-goal" / "ACTIVE_GOAL_STATE.md"
+        state_file.parent.mkdir(parents=True)
+        state_text = "# Orphaned goal state written by a retired lane\n"
+        state_file.write_text(state_text, encoding="utf-8")
+
+        payload = run_json(
+            "start-goal",
+            "--guided",
+            "--project",
+            str(project),
+            "--goal-id",
+            "reset-goal",
+            "--host-surface",
+            "codex-app",
+            "--goal-text",
+            "Continue the interrupted refactor",
+        )
+
+        assert payload["project_connection"]["connection_state"] == "orphaned_goal_state"
+        transaction = payload["guided_transaction"]
+        assert transaction["blocked_by"] == "orphaned_goal_state", transaction
+        assert [step["id"] for step in transaction["ordered_steps"]] == [
+            "inspect_connection",
+            "resolve_orphaned_goal_state",
+        ], transaction
+        commands = payload["command_pack"]["commands"]
+        for key in (
+            "goal_start_connect_if_needed",
+            "goal_start_refresh_state",
+            "goal_start_host_loop_activation",
+            "goal_start_quota_should_run",
+            "goal_start_plan_prompt",
+        ):
+            assert commands[key] is None, key
+        assert state_file.read_text(encoding="utf-8") == state_text
+        assert not (project / ".loopx" / "registry.json").exists()
+
+
 def test_start_goal_guided_requires_explicit_goal_for_multi_goal_project() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         project = Path(tmp) / "multi-goal-project"
@@ -896,6 +939,7 @@ def main() -> int:
     test_goal_text_invocation_plans_ranked_todos_before_activation()
     test_start_goal_guided_previews_transaction_without_mutation()
     test_start_goal_guided_blocks_orphaned_goal_state()
+    test_start_goal_guided_blocks_orphaned_state_without_a_registry()
     test_start_goal_guided_requires_explicit_goal_for_multi_goal_project()
     test_connected_project_reuses_existing_state()
     test_linked_git_worktree_reuses_canonical_source_registry()

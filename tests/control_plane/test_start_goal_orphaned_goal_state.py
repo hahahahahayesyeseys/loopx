@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from loopx.bootstrap_command_pack import (
     build_loopx_bootstrap_command_pack,
     build_start_goal_guided_packet,
@@ -38,35 +40,39 @@ def _project(
     *,
     orphaned_state_dirs: tuple[str, ...] = (),
     orphaned_goal_id: str = ORPHANED_GOAL_ID,
+    registry: str = "registered",
 ) -> Path:
-    """Build a project whose registry declares only ``live-goal``."""
+    """Build a project carrying an orphaned state file for ``orphaned_goal_id``.
+
+    ``registry`` selects how far the reset got: ``registered`` keeps the other
+    Goal's entry, ``empty`` keeps the file but declares no Goal, and ``missing``
+    removes the project registry entirely.
+    """
 
     project = root / "project"
-    registry = project / ".loopx" / "registry.json"
-    registry.parent.mkdir(parents=True)
-    registry.write_text(
-        json.dumps(
+    registry_path = project / ".loopx" / "registry.json"
+    registry_path.parent.mkdir(parents=True)
+    entries = (
+        [
             {
-                "schema_version": "0.1",
-                "goals": [
-                    {
-                        "id": REGISTERED_GOAL_ID,
-                        "status": "active",
-                        "repo": str(project),
-                        "state_file": (
-                            f".codex/goals/{REGISTERED_GOAL_ID}/ACTIVE_GOAL_STATE.md"
-                        ),
-                        "coordination": {
-                            "agent_model": "peer_v1",
-                            "registered_agents": ["codex-live"],
-                        },
-                    }
-                ],
+                "id": REGISTERED_GOAL_ID,
+                "status": "active",
+                "repo": str(project),
+                "state_file": f".codex/goals/{REGISTERED_GOAL_ID}/ACTIVE_GOAL_STATE.md",
+                "coordination": {
+                    "agent_model": "peer_v1",
+                    "registered_agents": ["codex-live"],
+                },
             }
-        )
-        + "\n",
-        encoding="utf-8",
+        ]
+        if registry == "registered"
+        else []
     )
+    if registry != "missing":
+        registry_path.write_text(
+            json.dumps({"schema_version": "0.1", "goals": entries}, indent=2) + "\n",
+            encoding="utf-8",
+        )
     registered_state = project / ".codex" / "goals" / REGISTERED_GOAL_ID
     registered_state.mkdir(parents=True)
     (registered_state / "ACTIVE_GOAL_STATE.md").write_text(
@@ -290,3 +296,68 @@ def test_obeying_agent_has_no_actionable_command_at_the_fence(tmp_path: Path) ->
     )
     assert unblocked["route"] == "select_agent_identity"
     assert unblocked["action_command_ids"]
+
+
+# ---- the same invariant holds when the reset removed the whole registry -----
+
+
+def _assert_fenced(payload: dict[str, Any]) -> None:
+    transaction = payload["guided_transaction"]
+
+    assert transaction["blocked_by"] == ORPHANED_GOAL_STATE_CONNECTION, transaction
+    assert [step["id"] for step in transaction["ordered_steps"]] == [
+        "inspect_connection",
+        "resolve_orphaned_goal_state",
+    ], transaction
+    commands = payload["command_pack"]["commands"]
+    for key in (
+        "goal_start_connect_if_needed",
+        "goal_start_refresh_state",
+        "goal_start_host_loop_activation",
+        "goal_start_quota_should_run",
+        "goal_start_plan_prompt",
+    ):
+        assert commands[key] is None, key
+    assert onboarding_entry_semantic_contract(payload)["action_command_ids"] == []
+
+
+@pytest.mark.parametrize("registry", ["missing", "empty"])
+def test_reset_without_a_registry_still_fences_surviving_state(
+    tmp_path: Path, registry: str
+) -> None:
+    project = _project(
+        tmp_path / registry,
+        orphaned_state_dirs=(".codex/goals",),
+        registry=registry,
+    )
+
+    connection = inspect_bootstrap_connection(project, goal_id=ORPHANED_GOAL_ID)
+    assert connection["connection_state"] == ORPHANED_GOAL_STATE_CONNECTION, connection
+    assert connection["orphaned_goal_state"]["state_file_routes"] == [
+        f".codex/goals/{ORPHANED_GOAL_ID}/ACTIVE_GOAL_STATE.md"
+    ], connection
+    _assert_fenced(_guided(project))
+
+
+@pytest.mark.parametrize(
+    ("registry", "absence_connection"),
+    [("missing", "not_connected"), ("empty", "registry_without_goal")],
+)
+def test_reset_without_orphaned_state_is_still_ordinary_onboarding(
+    tmp_path: Path, registry: str, absence_connection: str
+) -> None:
+    project = _project(tmp_path / f"clear-{registry}", registry=registry)
+
+    connection = inspect_bootstrap_connection(project, goal_id=ORPHANED_GOAL_ID)
+    assert connection["connection_state"] == absence_connection, connection
+    assert connection["registry_exists"] is (registry != "missing"), connection
+    assert "orphaned_goal_state" not in connection, connection
+
+    payload = _guided(project)
+    transaction = payload["guided_transaction"]
+    assert transaction.get("blocked_by") != ORPHANED_GOAL_STATE_CONNECTION, transaction
+    assert "orphaned_goal_state_gate" not in transaction, transaction
+    assert [step["id"] for step in transaction["ordered_steps"]][1] == (
+        "connect_if_needed"
+    )
+    assert payload["command_pack"]["commands"]["goal_start_connect_if_needed"]
