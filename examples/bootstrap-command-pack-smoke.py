@@ -499,15 +499,72 @@ def test_start_goal_guided_blocks_orphaned_goal_state() -> None:
         assert_fixture_unchanged({registry: registry.read_text(), state_file: snapshot[state_file]})
 
 
-def test_start_goal_guided_blocks_orphaned_state_without_a_registry() -> None:
-    """The same invariant must hold when the reset deleted the whole registry file."""
+def test_start_goal_guided_fences_orphaned_state_for_every_absence_route() -> None:
+    """No registry authority plus surviving state must fence, however that came about.
+
+    One real CLI run per absence shape: a deleted registry file, a registry that
+    declares no goal, and a registry that no longer parses each reach the fence
+    through a different return in the inspection.
+    """
+
+    for shape, registry_text, absence in (
+        ("missing", None, "not_connected"),
+        ("empty", '{"schema_version": "0.1", "goals": []}\n', "registry_without_goal"),
+        ("invalid", '{"schema_version": "0.1", "goals": [', "registry_invalid"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "reset-project"
+            state_file = project / ".codex" / "goals" / "reset-goal" / "ACTIVE_GOAL_STATE.md"
+            state_file.parent.mkdir(parents=True)
+            state_text = "# Orphaned goal state written by a retired lane\n"
+            state_file.write_text(state_text, encoding="utf-8")
+            if registry_text is not None:
+                registry = project / ".loopx" / "registry.json"
+                registry.parent.mkdir(parents=True)
+                registry.write_text(registry_text, encoding="utf-8")
+
+            payload = run_json(
+                "start-goal",
+                "--guided",
+                "--project",
+                str(project),
+                "--goal-id",
+                "reset-goal",
+                "--host-surface",
+                "codex-app",
+                "--goal-text",
+                "Continue the interrupted refactor",
+            )
+
+            connection = payload["project_connection"]
+            assert connection["connection_state"] == "orphaned_goal_state", (shape, connection)
+            assert connection["absent_connection_state"] == absence, (shape, connection)
+            transaction = payload["guided_transaction"]
+            assert transaction["blocked_by"] == "orphaned_goal_state", (shape, transaction)
+            assert [step["id"] for step in transaction["ordered_steps"]] == [
+                "inspect_connection",
+                "resolve_orphaned_goal_state",
+            ], (shape, transaction)
+            commands = payload["command_pack"]["commands"]
+            for key in (
+                "goal_start_connect_if_needed",
+                "goal_start_refresh_state",
+                "goal_start_host_loop_activation",
+                "goal_start_quota_should_run",
+                "goal_start_plan_prompt",
+            ):
+                assert commands[key] is None, (shape, key)
+            assert state_file.read_text(encoding="utf-8") == state_text, shape
+
+
+def test_unparseable_registry_without_orphaned_state_keeps_onboarding() -> None:
+    """A broken registry is its own repair action; the fence must not stand in for it."""
 
     with tempfile.TemporaryDirectory() as tmp:
         project = Path(tmp) / "reset-project"
-        state_file = project / ".codex" / "goals" / "reset-goal" / "ACTIVE_GOAL_STATE.md"
-        state_file.parent.mkdir(parents=True)
-        state_text = "# Orphaned goal state written by a retired lane\n"
-        state_file.write_text(state_text, encoding="utf-8")
+        registry = project / ".loopx" / "registry.json"
+        registry.parent.mkdir(parents=True)
+        registry.write_text('{"schema_version": "0.1", "goals": [', encoding="utf-8")
 
         payload = run_json(
             "start-goal",
@@ -522,24 +579,11 @@ def test_start_goal_guided_blocks_orphaned_state_without_a_registry() -> None:
             "Continue the interrupted refactor",
         )
 
-        assert payload["project_connection"]["connection_state"] == "orphaned_goal_state"
-        transaction = payload["guided_transaction"]
-        assert transaction["blocked_by"] == "orphaned_goal_state", transaction
-        assert [step["id"] for step in transaction["ordered_steps"]] == [
-            "inspect_connection",
-            "resolve_orphaned_goal_state",
-        ], transaction
-        commands = payload["command_pack"]["commands"]
-        for key in (
-            "goal_start_connect_if_needed",
-            "goal_start_refresh_state",
-            "goal_start_host_loop_activation",
-            "goal_start_quota_should_run",
-            "goal_start_plan_prompt",
-        ):
-            assert commands[key] is None, key
-        assert state_file.read_text(encoding="utf-8") == state_text
-        assert not (project / ".loopx" / "registry.json").exists()
+        connection = payload["project_connection"]
+        assert connection["connection_state"] == "registry_invalid", connection
+        assert "orphaned_goal_state" not in connection, connection
+        assert connection["reason"], connection
+        assert payload["command_pack"]["commands"]["goal_start_connect_if_needed"], payload
 
 
 def test_start_goal_guided_requires_explicit_goal_for_multi_goal_project() -> None:
@@ -939,7 +983,8 @@ def main() -> int:
     test_goal_text_invocation_plans_ranked_todos_before_activation()
     test_start_goal_guided_previews_transaction_without_mutation()
     test_start_goal_guided_blocks_orphaned_goal_state()
-    test_start_goal_guided_blocks_orphaned_state_without_a_registry()
+    test_start_goal_guided_fences_orphaned_state_for_every_absence_route()
+    test_unparseable_registry_without_orphaned_state_keeps_onboarding()
     test_start_goal_guided_requires_explicit_goal_for_multi_goal_project()
     test_connected_project_reuses_existing_state()
     test_linked_git_worktree_reuses_canonical_source_registry()

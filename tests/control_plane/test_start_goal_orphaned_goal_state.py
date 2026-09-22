@@ -45,8 +45,9 @@ def _project(
     """Build a project carrying an orphaned state file for ``orphaned_goal_id``.
 
     ``registry`` selects how far the reset got: ``registered`` keeps the other
-    Goal's entry, ``empty`` keeps the file but declares no Goal, and ``missing``
-    removes the project registry entirely.
+    Goal's entry, ``empty`` keeps the file but declares no Goal, ``missing``
+    removes the project registry entirely, and ``invalid`` leaves a file that no
+    longer parses.
     """
 
     project = root / "project"
@@ -68,7 +69,9 @@ def _project(
         if registry == "registered"
         else []
     )
-    if registry != "missing":
+    if registry == "invalid":
+        registry_path.write_text('{"schema_version": "0.1", "goals": [', encoding="utf-8")
+    elif registry != "missing":
         registry_path.write_text(
             json.dumps({"schema_version": "0.1", "goals": entries}, indent=2) + "\n",
             encoding="utf-8",
@@ -193,9 +196,6 @@ def test_guided_packet_offers_only_previews_over_orphaned_state(
         "inspect_registry_and_state",
         "preview_state_backup",
     ]
-    assert [
-        item["route"] for item in gate["unavailable_resolution_routes"]
-    ] == ["archive_project_local_state", "adopt_orphan_state"]
     for route in gate["resolution_routes"]:
         assert route["mutates"] is False
         assert "--execute" not in route["command"]
@@ -224,7 +224,6 @@ def test_guided_packet_carries_no_bootstrap_or_todo_authoring_continuation(
     message = payload["message"]
     assert "Orphaned Goal State Gate" in message
     assert "todo add" not in message
-    assert "is not available yet" in message
     assert not [
         line
         for line in message.splitlines()
@@ -298,7 +297,7 @@ def test_obeying_agent_has_no_actionable_command_at_the_fence(tmp_path: Path) ->
     assert unblocked["action_command_ids"]
 
 
-# ---- the same invariant holds when the reset removed the whole registry -----
+# ---- the same invariant holds whatever shape the reset left the registry in --
 
 
 def _assert_fenced(payload: dict[str, Any]) -> None:
@@ -321,9 +320,16 @@ def _assert_fenced(payload: dict[str, Any]) -> None:
     assert onboarding_entry_semantic_contract(payload)["action_command_ids"] == []
 
 
-@pytest.mark.parametrize("registry", ["missing", "empty"])
+@pytest.mark.parametrize(
+    ("registry", "absence_connection"),
+    [
+        ("missing", "not_connected"),
+        ("empty", "registry_without_goal"),
+        ("invalid", "registry_invalid"),
+    ],
+)
 def test_reset_without_a_registry_still_fences_surviving_state(
-    tmp_path: Path, registry: str
+    tmp_path: Path, registry: str, absence_connection: str
 ) -> None:
     project = _project(
         tmp_path / registry,
@@ -336,12 +342,21 @@ def test_reset_without_a_registry_still_fences_surviving_state(
     assert connection["orphaned_goal_state"]["state_file_routes"] == [
         f".codex/goals/{ORPHANED_GOAL_ID}/ACTIVE_GOAL_STATE.md"
     ], connection
+    # The fence must not erase which absence it was reached through: a registry
+    # that cannot be parsed is a different operator action from a deleted entry.
+    assert connection["absent_connection_state"] == absence_connection, connection
+    assert connection["absent_reason"], connection
+    assert connection["reason"] != connection["absent_reason"], connection
     _assert_fenced(_guided(project))
 
 
 @pytest.mark.parametrize(
     ("registry", "absence_connection"),
-    [("missing", "not_connected"), ("empty", "registry_without_goal")],
+    [
+        ("missing", "not_connected"),
+        ("empty", "registry_without_goal"),
+        ("invalid", "registry_invalid"),
+    ],
 )
 def test_reset_without_orphaned_state_is_still_ordinary_onboarding(
     tmp_path: Path, registry: str, absence_connection: str

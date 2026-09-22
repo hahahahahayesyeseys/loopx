@@ -8,8 +8,9 @@ same human-readable id. The routes below are the project goal-state roots
 detected rather than silently reconnected.
 
 This module owns the whole fence so ``loopx.bootstrap_command_pack`` keeps only
-its wiring: the detected fact, the operator-facing gate, the packet fields that
-must disappear over orphaned state, and the guided transaction's blocking shape.
+its wiring: one entry point through which every absence route passes, the
+operator-facing gate, the packet fields that must disappear over orphaned state,
+and the guided transaction's blocking shape.
 """
 
 from __future__ import annotations
@@ -24,14 +25,6 @@ ACTIVE_GOAL_STATE_FILENAME = "ACTIVE_GOAL_STATE.md"
 ORPHANED_GOAL_STATE_CONNECTION = "orphaned_goal_state"
 
 ORPHANED_GOAL_STATE_GATE_SCHEMA_VERSION = "loopx_orphaned_goal_state_gate_v0"
-
-REGISTRY_WITHOUT_GOAL_CONNECTION = "registry_without_goal"
-
-NOT_CONNECTED_CONNECTION = "not_connected"
-
-REGISTRY_WITHOUT_GOAL_REASON = "registry exists but no matching goal entry was found"
-
-NOT_CONNECTED_REASON = "project-local .loopx/registry.json is missing"
 
 # Project-local goal state has been written under each of these roots, so a goal
 # absent from the registry can still own durable state in any of them. Ordered
@@ -101,10 +94,9 @@ def orphaned_goal_state_projection(project: Path, goal_id: str) -> dict[str, Any
     }
 
 
-def goal_connection_without_matching_entry(
+def absent_goal_connection(
     *,
     base_connection: dict[str, Any],
-    project: Path,
     goal_id: str,
     state_file: Path,
     registry_exists: bool,
@@ -112,13 +104,16 @@ def goal_connection_without_matching_entry(
     absence_reason: str,
     known_goal_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Classify "no matching registry entry" as orphaned state or as ordinary absence.
+    """Project "no registry entry carries this goal", fenced if its state survives.
 
-    The absence half keeps the packet fields it carried before this fence existed,
-    including which of them are present, so a fresh project is unaffected.
+    This is the only way the goal-start flow states an absence, so an unparseable
+    registry file, a missing or empty one, and a readable registry with no
+    matching entry cannot drift apart on the safety question. The fields are the
+    ones the packet carried before this fence existed, so an ordinary absence --
+    including a fresh project -- keeps its old onboarding continuation.
     """
 
-    shared = {
+    connection: dict[str, Any] = {
         **base_connection,
         "registry_exists": registry_exists,
         "goal_id": goal_id,
@@ -126,44 +121,28 @@ def goal_connection_without_matching_entry(
         "state_file": str(state_file),
         "state_file_exists": state_file.exists(),
         "mutation_confirmation_required": True,
+        "connection_state": absence_connection,
+        "reason": absence_reason,
     }
     if known_goal_ids is not None:
-        shared["known_goal_ids"] = known_goal_ids
-    projection = orphaned_goal_state_projection(project, goal_id)
+        connection["known_goal_ids"] = known_goal_ids
+    # An empty project would resolve the state roots against the interpreter's
+    # working directory, which is not a project this packet may speak for.
+    project = str(base_connection.get("project") or "")
+    projection = orphaned_goal_state_projection(Path(project), goal_id) if project else None
     if projection is None:
-        return {
-            **shared,
-            "connection_state": absence_connection,
-            "reason": absence_reason,
-        }
+        return connection
     return {
-        **shared,
+        **connection,
         "orphaned_goal_state": projection,
         "connection_state": ORPHANED_GOAL_STATE_CONNECTION,
+        # Which absence produced the fence stays attributable: a registry that
+        # cannot be parsed is a different operator action from a deleted entry.
+        "absent_connection_state": absence_connection,
+        "absent_reason": absence_reason,
         "bootstrap_continuation_allowed": False,
         "reason": ORPHANED_GOAL_STATE_REASON,
     }
-
-
-def registry_missing_goal_connection(**fields: Any) -> dict[str, Any]:
-    """Classify the absence inside a readable, non-empty registry."""
-
-    return goal_connection_without_matching_entry(
-        absence_connection=REGISTRY_WITHOUT_GOAL_CONNECTION,
-        absence_reason=REGISTRY_WITHOUT_GOAL_REASON,
-        **fields,
-    )
-
-
-def unregistered_goal_connection(**fields: Any) -> dict[str, Any]:
-    """Classify the absence when no readable registry declares any goal."""
-
-    return goal_connection_without_matching_entry(
-        registry_exists=False,
-        absence_connection=NOT_CONNECTED_CONNECTION,
-        absence_reason=NOT_CONNECTED_REASON,
-        **fields,
-    )
 
 
 def orphaned_goal_state_gate(
@@ -199,23 +178,6 @@ def orphaned_goal_state_gate(
             "backup-state writes nothing until the operator adds --execute, which is "
             "the auditable archive the resolution depends on"
         ),
-        "unavailable_resolution_routes": [
-            {
-                "route": "archive_project_local_state",
-                "reason": (
-                    "uninstall-project selects goals from the project registry and "
-                    "archive-runtime selects a goal directory under the shared runtime "
-                    "root, so neither reaches state the registry no longer declares"
-                ),
-            },
-            {
-                "route": "adopt_orphan_state",
-                "reason": (
-                    "re-registering the goal id is the second authority this fence "
-                    "prevents; adoption needs an explicit instance identity first"
-                ),
-            },
-        ],
         "forbidden_until_resolved": list(FORBIDDEN_UNTIL_RESOLVED),
     }
 
@@ -282,17 +244,10 @@ def render_guided_lines(transaction: dict[str, Any]) -> str:
     if not isinstance(gate, dict):
         return ""
     routes = "\n".join(
-        [
-            f"- `{route.get('route')}` (preview only): "
-            f"`{str(route.get('command')).splitlines()[-1]}`"
-            for route in gate.get("resolution_routes") or []
-            if isinstance(route, dict)
-        ]
-        + [
-            f"- `{item.get('route')}` is not available yet: {item.get('reason')}"
-            for item in gate.get("unavailable_resolution_routes") or []
-            if isinstance(item, dict)
-        ]
+        f"- `{route.get('route')}` (preview only): "
+        f"`{str(route.get('command')).splitlines()[-1]}`"
+        for route in gate.get("resolution_routes") or []
+        if isinstance(route, dict)
     )
     return (
         "\n## Orphaned Goal State Gate\n\n"
