@@ -15,8 +15,10 @@ from .capabilities.issue_fix.workflow_plan import (
 )
 from .control_plane.effect_program import effect_program_from_ordered_steps
 from .control_plane.goals.orphaned_goal_state import (
+    ORPHANED_GOAL_STATE_CONNECTION,
     absent_goal_connection,
     fence_command_pack,
+    fenced_standalone_message,
     guided_fence,
     render_guided_lines,
 )
@@ -1932,6 +1934,8 @@ Preview only; follow ordered commands to mutate.
 def render_loopx_bootstrap_command_pack_message(payload: dict[str, Any]) -> str:
     connection = payload.get("project_connection")
     connection = connection if isinstance(connection, dict) else {}
+    if connection.get("connection_state") == ORPHANED_GOAL_STATE_CONNECTION:
+        return fenced_standalone_message(payload)
     commands = payload.get("commands")
     commands = commands if isinstance(commands, dict) else {}
     next_step = payload.get("recommended_next_step")

@@ -19,12 +19,14 @@ from loopx.bootstrap_command_pack import (
     build_loopx_bootstrap_command_pack,
     build_start_goal_guided_packet,
     inspect_bootstrap_connection,
+    render_loopx_bootstrap_command_pack_message,
 )
 from loopx.control_plane.goals.orphaned_goal_state import (
     GOAL_STATE_ROOTS,
     ORPHANED_GOAL_STATE_CONNECTION,
     orphaned_goal_state_routes,
 )
+from loopx.control_plane.testing.continuation_verb_guard import assert_no_continuation_verb
 from loopx.control_plane.testing.onboarding_model_behavior_qualification import (
     onboarding_entry_contract_violations,
     onboarding_entry_semantic_contract,
@@ -295,6 +297,30 @@ def test_obeying_agent_has_no_actionable_command_at_the_fence(tmp_path: Path) ->
     )
     assert unblocked["route"] == "select_agent_identity"
     assert unblocked["action_command_ids"]
+
+
+# ---- no consumption surface may keep a continuation verb ---------------------
+
+
+def test_every_fenced_consumption_surface_is_read_only(tmp_path: Path) -> None:
+    project = _project(tmp_path, orphaned_state_dirs=(".codex/goals",))
+
+    guided = _guided(project)
+    command_pack = _command_pack(project)
+
+    assert_no_continuation_verb(guided, source="guided_packet")
+    assert_no_continuation_verb(command_pack, source="standalone_command_pack")
+    assert_no_continuation_verb(
+        render_loopx_bootstrap_command_pack_message(command_pack),
+        source="standalone_rendered_message",
+    )
+    # The guard above must not be able to pass on a packet that has nothing left
+    # to tell the operator: the read-only half survives the rebuild.
+    assert command_pack["commands"]["status"]
+    assert [
+        route["route"]
+        for route in guided["guided_transaction"]["orphaned_goal_state_gate"]["resolution_routes"]
+    ] == ["inspect_registry_and_state", "preview_state_backup"]
 
 
 # ---- the same invariant holds whatever shape the reset left the registry in --

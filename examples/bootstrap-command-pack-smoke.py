@@ -10,6 +10,12 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from loopx.control_plane.testing.continuation_verb_guard import (  # noqa: E402
+    assert_no_continuation_verb,
+)
 
 
 def run_json(*args: str, env: dict[str, str] | None = None) -> dict[str, object]:
@@ -586,6 +592,54 @@ def test_unparseable_registry_without_orphaned_state_keeps_onboarding() -> None:
         assert payload["command_pack"]["commands"]["goal_start_connect_if_needed"], payload
 
 
+def test_fenced_project_surfaces_offer_no_continuation() -> None:
+    """No real CLI surface over orphaned state may spell out a runnable mutation.
+
+    The guided packet with its full command pack, and the standalone command pack
+    with its rendered message, are both executed by hosts. Each carried
+    ``register-agent --execute`` in nested fields the top-level fence never read.
+    """
+
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp) / "reset-project"
+        state_file = project / ".codex" / "goals" / "reset-goal" / "ACTIVE_GOAL_STATE.md"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text(
+            "# Orphaned goal state written by a retired lane\n", encoding="utf-8"
+        )
+        guided = run_json(
+            "start-goal",
+            "--guided",
+            "--include-command-pack-detail",
+            "--project",
+            str(project),
+            "--goal-id",
+            "reset-goal",
+            "--host-surface",
+            "codex-app",
+            "--goal-text",
+            "Continue the interrupted refactor",
+        )
+        standalone = run_json(
+            "bootstrap-command-pack",
+            "--project",
+            str(project),
+            "--goal-id",
+            "reset-goal",
+            "--host-surface",
+            "codex-app",
+        )
+
+        assert guided["project_connection"]["connection_state"] == "orphaned_goal_state"
+        assert standalone["project_connection"]["connection_state"] == "orphaned_goal_state"
+        assert_no_continuation_verb(guided, source="guided with command pack detail")
+        assert_no_continuation_verb(standalone, source="standalone command pack")
+        # Without a surviving read-only route the guard above could pass on a
+        # packet that tells the operator nothing at all.
+        assert guided["command_pack"]["commands"]["status"]
+        assert state_file.is_file()
+
+
 def test_start_goal_guided_requires_explicit_goal_for_multi_goal_project() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         project = Path(tmp) / "multi-goal-project"
@@ -985,6 +1039,7 @@ def main() -> int:
     test_start_goal_guided_blocks_orphaned_goal_state()
     test_start_goal_guided_fences_orphaned_state_for_every_absence_route()
     test_unparseable_registry_without_orphaned_state_keeps_onboarding()
+    test_fenced_project_surfaces_offer_no_continuation()
     test_start_goal_guided_requires_explicit_goal_for_multi_goal_project()
     test_connected_project_reuses_existing_state()
     test_linked_git_worktree_reuses_canonical_source_registry()

@@ -49,18 +49,25 @@ FORBIDDEN_UNTIL_RESOLVED = (
     "host_loop_activation",
 )
 
-# The command-pack keys that carry a mutation continuation, including the four the
-# onboarding entry contract treats as one connect -> writeback -> activate -> quota
-# loop. Over orphaned state none of them may be offered, goal text or not.
-MUTATION_CONTINUATION_COMMANDS = (
-    "goal_start_connect_if_needed",
-    "bootstrap_dry_run_preview",
-    "bootstrap_after_user_confirmation",
-    "goal_start_plan_prompt",
-    "goal_start_refresh_state",
-    "goal_start_host_loop_activation",
-    "goal_start_quota_should_run",
+# Over orphaned state the packet is rebuilt from what is safe to run rather than
+# from verbs to suppress: `status` is the only command-pack entry point left, and
+# the resolution gate below is the only other source of runnable commands. A key
+# a future builder adds to the pack is then withheld by default instead of having
+# to be remembered here.
+FENCED_COMMAND_KEYS = ("status",)
+
+# Subtrees whose fields carry a continuation verb -- registration, activation
+# input and steps, the heartbeat prompt, and the planner's post-PR routes. They
+# are dropped whole; every consumer reads them through an isinstance guard.
+# `available_slash_commands` and `onboarding_hint` are dropped for the same
+# reason as the rendered text: both spell out the verbs this fence withholds.
+FENCED_SUBTREES = (
+    "available_slash_commands",
+    "host_loop_activation",
+    "onboarding_hint",
 )
+
+FENCED_CONTRACT_KEYS = ("activation", "domain_route_hints", "execution_invariants")
 
 
 def orphaned_goal_state_routes(project: Path, goal_id: str) -> list[str]:
@@ -194,8 +201,16 @@ def fence_command_pack(command_pack: dict[str, Any], *, command_prefix: str) -> 
         command_prefix=command_prefix,
         status_command=str(command_pack["commands"]["status"]),
     )
-    for key in MUTATION_CONTINUATION_COMMANDS:
-        command_pack["commands"][key] = None
+    commands = command_pack["commands"]
+    for key in list(commands):
+        if key not in FENCED_COMMAND_KEYS:
+            commands[key] = None
+    for key in FENCED_SUBTREES:
+        command_pack[key] = None
+    contract = command_pack.get("goal_start_contract")
+    if isinstance(contract, dict):
+        for key in FENCED_CONTRACT_KEYS:
+            contract.pop(key, None)
     safety = command_pack["safety_contract"]
     safety["orphaned_goal_state_blocks_continuation"] = True
     safety["mutation_requires_user_confirmation"] = True
@@ -237,18 +252,45 @@ def guided_fence(gate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _preview_route_lines(gate: dict[str, Any]) -> str:
+    return "\n".join(
+        f"- `{route.get('route')}` (preview only): "
+        f"`{str(route.get('command')).splitlines()[-1]}`"
+        for route in gate.get("resolution_routes") or []
+        if isinstance(route, dict)
+    )
+
+
+def fenced_standalone_message(command_pack: dict[str, Any]) -> str:
+    """Render the standalone command pack for an orphaned Goal.
+
+    The shared renderer's body is connect, plan-write and activation guidance --
+    exactly what this fence withholds -- so a fenced pack states its own two
+    read-only routes instead of that text with holes punched in it.
+    """
+
+    gate = command_pack.get("orphaned_goal_state") or {}
+    return (
+        "# LoopX Bootstrap Command Pack\n\n"
+        f"- project: `{command_pack.get('project')}`\n"
+        f"- goal_id: `{command_pack.get('goal_id')}`\n"
+        f"- connection_state: `{ORPHANED_GOAL_STATE_CONNECTION}`\n\n"
+        f"{gate.get('reason')}\n\n"
+        f"- withheld until an operator resolves it: "
+        f"{', '.join(str(name) for name in gate.get('forbidden_until_resolved') or [])}\n"
+        f"- {gate.get('execution_boundary')}\n\n"
+        "## Read-only routes\n\n"
+        f"{_preview_route_lines(gate)}\n"
+    )
+
+
 def render_guided_lines(transaction: dict[str, Any]) -> str:
     """Render the orphan gate section of the guided Markdown, or nothing."""
 
     gate = transaction.get("orphaned_goal_state_gate")
     if not isinstance(gate, dict):
         return ""
-    routes = "\n".join(
-        f"- `{route.get('route')}` (preview only): "
-        f"`{str(route.get('command')).splitlines()[-1]}`"
-        for route in gate.get("resolution_routes") or []
-        if isinstance(route, dict)
-    )
+    routes = _preview_route_lines(gate)
     return (
         "\n## Orphaned Goal State Gate\n\n"
         f"{gate.get('reason')}\n\n"
