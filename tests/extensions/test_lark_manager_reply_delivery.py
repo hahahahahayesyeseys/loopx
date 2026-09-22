@@ -13,7 +13,10 @@ from loopx.extensions.lark.manager_reply_delivery import (
 )
 from loopx.extensions.lark.event_inbox import ingest_lark_event_inbox, inspect_lark_event_inbox
 from loopx.extensions.lark.manager_context import (
+    MANAGER_CONTEXT_CHARACTER_LIMIT,
+    MANAGER_CONTEXT_ITEM_LIMIT,
     compact_manager_context,
+    manager_context_materials,
     manager_context_materials_for_ids,
 )
 from test_lark_inbox_reactions import _fixture
@@ -190,3 +193,82 @@ def test_manager_context_retry_reuses_recorded_ids_over_newer_arrivals():
         message_ids=["om_context_old"],
     )
     assert [item["message_id"] for item in selected] == ["om_context_old"]
+
+
+def _chat_window(count: int, *, content: str) -> dict:
+    """A manager chat with ``count`` unaddressed messages, oldest first."""
+
+    return {
+        "items": [
+            {
+                "message_id": f"om_{index:02d}",
+                "create_time": f"2026-09-13T{index // 60:02d}:{index % 60:02d}:00Z",
+                "content": content,
+                "addressed_to_bot": False,
+            }
+            for index in range(count)
+        ]
+    }
+
+
+def test_context_window_keeps_the_newest_messages_in_arrival_order() -> None:
+    """More chat than the window allows must drop the oldest, never scatter them.
+
+    #4318 keeps a manager chat as context only: which slice survives, and in
+    what order, is what a later Turn relies on to read the conversation as it
+    happened.
+    """
+
+    materials = manager_context_materials(
+        _chat_window(MANAGER_CONTEXT_ITEM_LIMIT + 3, content="keep me"),
+        current_message_id="om_current",
+    )
+
+    assert len(materials) == MANAGER_CONTEXT_ITEM_LIMIT
+    assert [item["message_id"] for item in materials] == [
+        f"om_{index:02d}"
+        for index in range(3, MANAGER_CONTEXT_ITEM_LIMIT + 3)
+    ]
+
+
+def test_context_character_budget_is_spent_from_the_newest_side() -> None:
+    """The budget protects recency: the oldest surviving item is the clipped one.
+
+    Reading the window newest-first matters as much as its size. Trimming from
+    the other end would cut the messages the manager is most likely to be asked
+    about while claiming to stay in budget.
+    """
+
+    long_message = "x" * 1200
+    materials = manager_context_materials(
+        _chat_window(MANAGER_CONTEXT_ITEM_LIMIT, content=long_message),
+        current_message_id="om_current",
+    )
+    sizes = [len(item["content"]) for item in materials]
+
+    assert sum(sizes) == MANAGER_CONTEXT_CHARACTER_LIMIT
+    assert sizes == sorted(sizes), "only the oldest surviving item may be clipped"
+    assert materials[-1]["message_id"] == f"om_{MANAGER_CONTEXT_ITEM_LIMIT - 1:02d}"
+    assert all(len(item["content"]) <= len(long_message) for item in materials)
+
+
+def test_context_materials_exclude_the_addressed_and_the_current_message() -> None:
+    """Addressed and current messages carry authority; context material must not.
+
+    A message that already starts a Turn must not also arrive as quiet history in
+    the same packet, while history replayed as context stays even though it names
+    the bot.
+    """
+
+    projection = {
+        "items": [
+            {"message_id": "om_current", "create_time": "2026-09-13T00:00:00Z", "content": "this Turn", "addressed_to_bot": False},
+            {"message_id": "om_addressed", "create_time": "2026-09-13T00:01:00Z", "content": "earlier question", "addressed_to_bot": True},
+            {"message_id": "om_replayed", "create_time": "2026-09-13T00:02:00Z", "content": "backfilled history naming @bot", "addressed_to_bot": True, "historical_context_only": True},
+            {"message_id": "om_plain", "create_time": "2026-09-13T00:03:00Z", "content": "side chatter", "addressed_to_bot": False},
+        ]
+    }
+
+    materials = manager_context_materials(projection, current_message_id="om_current")
+
+    assert [item["message_id"] for item in materials] == ["om_replayed", "om_plain"]
